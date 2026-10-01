@@ -22,6 +22,14 @@ locals {
 
   mailgun_from = var.mailgun_from != "" ? var.mailgun_from : "scorer@${var.mailgun_domain}"
   api_key      = var.api_key != "" ? var.api_key : random_password.api_key.result
+
+  # Cloud Build runs as the project's Cloud Build service account, or on newer
+  # projects as the Compute Engine default account. Keyed by name, because the
+  # project number inside the values is only known once the APIs are enabled.
+  build_accounts = var.build_image ? {
+    cloudbuild = "serviceAccount:${data.google_project.this.number}@cloudbuild.gserviceaccount.com"
+    compute    = "serviceAccount:${data.google_project.this.number}-compute@developer.gserviceaccount.com"
+  } : {}
 }
 
 resource "google_project_service" "apis" {
@@ -49,29 +57,21 @@ resource "google_artifact_registry_repository" "images" {
   depends_on    = [google_project_service.apis]
 }
 
-# Cloud Build pushes with the project's Cloud Build service account, or on
-# newer projects with the Compute Engine default account; let both push here.
+# Whichever account runs the build must be able to push the image here ...
 resource "google_artifact_registry_repository_iam_member" "builders" {
-  for_each = var.build_image ? toset([
-    "serviceAccount:${data.google_project.this.number}@cloudbuild.gserviceaccount.com",
-    "serviceAccount:${data.google_project.this.number}-compute@developer.gserviceaccount.com",
-  ]) : toset([])
+  for_each   = local.build_accounts
   repository = google_artifact_registry_repository.images.id
   location   = var.region
   role       = "roles/artifactregistry.writer"
-  member     = each.key
+  member     = each.value
 }
 
-# On projects created since 2024 the build runs as the Compute Engine default
-# account, which also has to be allowed to write the build log.
+# ... and to write the build log.
 resource "google_project_iam_member" "builders_log" {
-  for_each = var.build_image ? toset([
-    "serviceAccount:${data.google_project.this.number}@cloudbuild.gserviceaccount.com",
-    "serviceAccount:${data.google_project.this.number}-compute@developer.gserviceaccount.com",
-  ]) : toset([])
-  project = var.project_id
-  role    = "roles/logging.logWriter"
-  member  = each.key
+  for_each = local.build_accounts
+  project  = var.project_id
+  role     = "roles/logging.logWriter"
+  member   = each.value
 }
 
 resource "terraform_data" "image" {
