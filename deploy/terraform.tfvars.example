@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars (git-ignored) and fill in. The Mailgun key can also
+# come from the environment instead: export TF_VAR_mailgun_api_key=...
+project_id      = "my-gcp-project"
+region          = "us-central1"
+mailgun_domain  = "mail.example.com"
+mailgun_from    = "scorer <scorer@mail.example.com>"
+mailgun_api_key = "..."

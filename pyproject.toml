@@ -1,0 +1,39 @@
+[project]
+name = "scorer"
+version = "0.1.0"
+description = "Turn music at a URL into a sheet-music score (MusicXML / MIDI / PDF)"
+readme = "README.md"
+authors = [
+    { name = "Jason Henry", email = "jason.henry@sleepdoctor.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "email-validator>=2.3.0",
+    "fastapi>=0.142.2",
+    "httpx>=0.28.1",
+    "imageio-ffmpeg>=0.6.0",
+    "librosa>=1.0.0",
+    "music21>=10.5.0",
+    "numpy>=2.5.3",
+    "reportlab>=5.0.1",
+    "scipy>=1.18.1",
+    "svglib>=2.2.0",
+    "uvicorn>=0.54.0",
+    "verovio>=6.3.0",
+    "yt-dlp>=2026.8.19",
+]
+
+[project.scripts]
+scorer = "scorer.cli:main"
+scorer-api = "scorer.api:main"
+
+[build-system]
+requires = ["uv_build>=0.11.15,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pyinstaller>=6.22.3",
+    "pytest>=9.1.1",
+]

@@ -1,0 +1,14 @@
+.venv/
+.git/
+__pycache__/
+*.pyc
+build/
+dist/
+scores/
+outbox/
+tests/
+scripts/
+deploy/
+.env
+*.tfvars
+.DS_Store
