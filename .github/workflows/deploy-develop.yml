@@ -1,0 +1,101 @@
+# Deploys the API to Cloud Run whenever develop changes (a merged pull request
+# arrives as a push). GitHub authenticates to Google Cloud with Workload
+# Identity Federation, so no service-account key is stored anywhere; the
+# trust relationship and the deployer service account come from
+# deploy/bootstrap, applied once by hand. Configure in the repository's
+# "develop" environment:
+#
+#   variables  GCP_PROJECT_ID, GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_DEPLOYER_SERVICE_ACCOUNT,
+#              MAILGUN_DOMAIN, MAILGUN_FROM (optional), GCP_REGION (optional)
+#   secrets    MAILGUN_API_KEY, SCORER_API_KEY (optional; generated when absent)
+name: Deploy to Cloud Run (develop)
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+# One deployment at a time; a queued one waits rather than racing on the state.
+concurrency:
+  group: deploy-develop
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run tests
+        run: uv run pytest -q
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment:
+      name: develop
+      url: ${{ steps.apply.outputs.url }}
+    defaults:
+      run:
+        working-directory: deploy
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_region: ${{ vars.GCP_REGION || 'us-central1' }}
+      TF_VAR_mailgun_domain: ${{ vars.MAILGUN_DOMAIN }}
+      TF_VAR_mailgun_from: ${{ vars.MAILGUN_FROM }}
+      TF_VAR_mailgun_api_key: ${{ secrets.MAILGUN_API_KEY }}
+      TF_VAR_api_key: ${{ secrets.SCORER_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+
+      # Terraform shells out to `gcloud builds submit` to build the image.
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.15"
+          terraform_wrapper: false
+
+      - name: Terraform init
+        run: terraform init
+
+      - name: Terraform plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform apply
+        id: apply
+        run: |
+          terraform apply tfplan
+          echo "url=$(terraform output -raw url)" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Deployed to Cloud Run"
+            echo
+            echo "- Service: $(terraform output -raw url)"
+            echo "- Image: $(terraform output -raw image)"
+            echo
+            echo 'Send a job with `POST /transcriptions` and the `X-API-Key` from `terraform output -raw api_key`.'
+          } >> "$GITHUB_STEP_SUMMARY"

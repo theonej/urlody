@@ -7,7 +7,7 @@ build/
 dist/
 outbox/
 .env
-deploy/.terraform/
-deploy/*.tfstate
-deploy/*.tfstate.*
-deploy/*.tfvars
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars

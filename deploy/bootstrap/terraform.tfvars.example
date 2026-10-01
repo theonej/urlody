@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars (git-ignored). Apply once as a project owner.
+project_id        = "my-gcp-project"
+region            = "us-central1"
+github_repository = "theonej/urlody"
+branch            = "develop"
+state_bucket      = "urlody-tfstate-dev"

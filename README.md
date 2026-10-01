@@ -131,6 +131,32 @@ service URL. The endpoint is reachable by anyone (`public = true`) but refuses r
 without the generated API key. Keep the state in a private bucket (see the `backend "gcs"`
 comment in `versions.tf`): it contains both keys.
 
+### Deploying from GitHub
+
+[deploy-develop.yml](.github/workflows/deploy-develop.yml) runs the tests and then
+`terraform apply` on every push to `develop` (a merged pull request arrives as a push), so
+`develop` is always what is running on Cloud Run. GitHub signs in to Google Cloud with
+Workload Identity Federation: no service-account key is stored in GitHub, and only workflows
+from this repository's `develop` branch can act as the deployer. Setting that up is a one-time
+job, done as a project owner:
+
+```
+cd deploy/bootstrap
+cp terraform.tfvars.example terraform.tfvars    # project id; the repository and branch default to theonej/urlody and develop
+terraform init
+terraform apply
+terraform output github_variables
+```
+
+Then, in the repository's settings, create a `develop` environment and give it the variables
+the output lists (`GCP_PROJECT_ID`, `GCP_REGION`, `GCP_WORKLOAD_IDENTITY_PROVIDER`,
+`GCP_DEPLOYER_SERVICE_ACCOUNT`, `MAILGUN_DOMAIN`, optionally `MAILGUN_FROM`) and the secrets
+`MAILGUN_API_KEY` and, optionally, `SCORER_API_KEY` (left out, the API key is generated on the
+first deploy and kept in the Terraform state; read it with `terraform output -raw api_key`).
+The bootstrap also creates the Cloud Build staging bucket and grants the deployer access to the
+state bucket, so the workflow needs nothing else. The deployment's URL appears on the
+workflow run's summary page and on the `develop` environment.
+
 Two things to know about running it there. A job in flight when Cloud Run replaces an
 instance is lost; for a busier deployment, queue jobs through Cloud Tasks and run the
 transcription inside the request instead. And YouTube often blocks downloads from cloud

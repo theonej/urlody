@@ -62,6 +62,18 @@ resource "google_artifact_registry_repository_iam_member" "builders" {
   member     = each.key
 }
 
+# On projects created since 2024 the build runs as the Compute Engine default
+# account, which also has to be allowed to write the build log.
+resource "google_project_iam_member" "builders_log" {
+  for_each = var.build_image ? toset([
+    "serviceAccount:${data.google_project.this.number}@cloudbuild.gserviceaccount.com",
+    "serviceAccount:${data.google_project.this.number}-compute@developer.gserviceaccount.com",
+  ]) : toset([])
+  project = var.project_id
+  role    = "roles/logging.logWriter"
+  member  = each.key
+}
+
 resource "terraform_data" "image" {
   count = var.build_image ? 1 : 0
 
@@ -72,7 +84,10 @@ resource "terraform_data" "image" {
     command     = "gcloud builds submit --project ${var.project_id} --tag ${local.built_image} ."
   }
 
-  depends_on = [google_artifact_registry_repository_iam_member.builders]
+  depends_on = [
+    google_artifact_registry_repository_iam_member.builders,
+    google_project_iam_member.builders_log,
+  ]
 }
 
 # --- secrets -----------------------------------------------------------------
