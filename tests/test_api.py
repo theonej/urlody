@@ -170,3 +170,59 @@ def test_mail_trouble_is_logged_not_raised(outbox, monkeypatch, caplog):
         monkeypatch.setattr(client.app.state.mailer, "send", broken_send)
         assert client.post("/transcriptions", json=REQUEST).status_code == 202
     assert "could not send mail to someone@example.com" in caplog.text
+
+
+class FakeSecretManager:
+    """Stands in for the Secret Manager client: serves the current value, counts reads."""
+
+    def __init__(self, value):
+        self.value, self.reads, self.names = value, 0, []
+
+    def access_secret_version(self, request):
+        import types
+
+        self.reads += 1
+        self.names.append(request["name"])
+        return types.SimpleNamespace(payload=types.SimpleNamespace(data=self.value.encode()))
+
+
+def test_secret_manager_key_is_read_once_until_refreshed():
+    store = FakeSecretManager("key-one")
+    key = api.SecretManagerKey("projects/p/secrets/mailgun", client=store)
+    assert key.value() == "key-one" and key.value() == "key-one"
+    assert store.reads == 1
+    assert store.names == ["projects/p/secrets/mailgun/versions/latest"]
+    store.value = "key-two"
+    assert key.value() == "key-one"  # cached
+    assert key.value(refresh=True) == "key-two"
+    assert api.SecretManagerKey("projects/p/secrets/m/versions/3", client=store).name.endswith("/versions/3")
+
+
+def test_mailgun_rereads_a_rejected_key_and_retries():
+    store = FakeSecretManager("old-key")
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers["authorization"])
+        if request.headers["authorization"] == "Basic " + base64.b64encode(b"api:old-key").decode():
+            store.value = "new-key"  # the key was rotated in Secret Manager meanwhile
+            return httpx.Response(401, text="Forbidden")
+        return httpx.Response(200, json={"id": "<ok@mg>", "message": "Queued. Thank you."})
+
+    mailer = api.Mailgun(
+        sender="s@d", domain="d", api_key=api.SecretManagerKey("projects/p/secrets/m", client=store),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    mailer.send(api.failure_message("someone@example.com", "http://x", "why"))
+    assert len(seen) == 2 and seen[1] == "Basic " + base64.b64encode(b"api:new-key").decode()
+    assert store.reads == 2
+
+
+def test_mailgun_key_can_come_from_secret_manager(monkeypatch):
+    for variable in ("SMTP_HOST", "SCORER_OUTBOX", "MAILGUN_API_KEY"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("MAILGUN_API_KEY_SECRET", "projects/p/secrets/scorer-mailgun-api-key")
+    monkeypatch.setenv("MAILGUN_DOMAIN", "mg.example.org")
+    mailer = api.mailer_from_env()
+    assert isinstance(mailer, api.Mailgun) and isinstance(mailer.api_key, api.SecretManagerKey)
+    assert mailer.api_key.name == "projects/p/secrets/scorer-mailgun-api-key/versions/latest"

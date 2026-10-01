@@ -2,9 +2,11 @@
 #
 # Cloud Run runs the same container as `docker run`, with the CPU kept
 # allocated between requests (cpu_idle = false) so that the transcription,
-# which runs after the 202 response, keeps running. The Mailgun key and the
-# API key live in Secret Manager and reach the container as environment
-# variables; everything else is plain configuration.
+# which runs after the 202 response, keeps running. The API key lives in
+# Secret Manager and reaches the container as an environment variable. The
+# Mailgun key never passes through Terraform at all: this creates an empty
+# secret for it, its value is added by hand (see the mailgun_secret output),
+# and the service reads it from Secret Manager at run time.
 
 locals {
   root = "${path.module}/.."
@@ -98,18 +100,39 @@ resource "random_password" "api_key" {
 }
 
 resource "google_secret_manager_secret" "secrets" {
-  for_each  = { mailgun-api-key = var.mailgun_api_key, api-key = local.api_key }
+  for_each  = toset(["mailgun-api-key", "api-key"])
   secret_id = "${var.service_name}-${each.key}"
   replication {
     auto {}
   }
   depends_on = [google_project_service.apis]
+
+  lifecycle {
+    # Versions of the Mailgun secret are added outside Terraform; never drop them.
+    prevent_destroy = true
+  }
 }
 
-resource "google_secret_manager_secret_version" "secrets" {
-  for_each    = google_secret_manager_secret.secrets
-  secret      = each.value.id
-  secret_data = each.key == "mailgun-api-key" ? var.mailgun_api_key : local.api_key
+# Only the API key gets its value from here; the Mailgun key is added out of band.
+resource "google_secret_manager_secret_version" "api_key" {
+  secret      = google_secret_manager_secret.secrets["api-key"].id
+  secret_data = local.api_key
+}
+
+# Earlier versions of this configuration wrote both secrets' values. Keep the
+# API key's version under its new name, and let go of the Mailgun key's version
+# without destroying it: the service is reading it.
+moved {
+  from = google_secret_manager_secret_version.secrets["api-key"]
+  to   = google_secret_manager_secret_version.api_key
+}
+
+removed {
+  from = google_secret_manager_secret_version.secrets
+
+  lifecycle {
+    destroy = false
+  }
 }
 
 resource "google_service_account" "run" {
@@ -175,13 +198,9 @@ resource "google_cloud_run_v2_service" "api" {
         value = tostring(var.workers)
       }
       env {
-        name = "MAILGUN_API_KEY"
-        value_source {
-          secret_key_ref {
-            secret  = google_secret_manager_secret.secrets["mailgun-api-key"].secret_id
-            version = "latest"
-          }
-        }
+        # The service reads the key itself, so a rotated key needs no redeploy.
+        name  = "MAILGUN_API_KEY_SECRET"
+        value = google_secret_manager_secret.secrets["mailgun-api-key"].id
       }
       env {
         name = "SCORER_API_KEY"
@@ -197,7 +216,7 @@ resource "google_cloud_run_v2_service" "api" {
 
   depends_on = [
     terraform_data.image,
-    google_secret_manager_secret_version.secrets,
+    google_secret_manager_secret_version.api_key,
     google_secret_manager_secret_iam_member.run_reads_secrets,
   ]
 }

@@ -70,6 +70,12 @@ MAILGUN_FROM=scorer <scorer@mg.example.com>   # optional; defaults to scorer@<do
 MAILGUN_API_BASE=https://api.eu.mailgun.net   # EU accounts only
 ```
 
+In production the key need not be in the environment at all: set
+`MAILGUN_API_KEY_SECRET=projects/<project>/secrets/<name>` instead and the service reads it
+from Google Secret Manager when it first sends mail, authenticating as its own service
+account. It caches the value, reads it again if Mailgun rejects it and every ten minutes
+regardless, so rotating the key is a matter of adding a new secret version.
+
 A Mailgun sandbox domain only delivers to the addresses authorised for it in the Mailgun
 dashboard (up to five); anything else is refused, and the server logs the refusal. For another
 provider, set `SMTP_HOST`, `SMTP_PORT` (default 587), `SMTP_USERNAME`, `SMTP_PASSWORD`,
@@ -87,25 +93,29 @@ and the recipient should simply submit it again.
 ## Deploying to Google Cloud Run
 
 [deploy/](deploy/) holds a Terraform configuration that builds the container from the
-[Dockerfile](Dockerfile) with Cloud Build, stores the Mailgun key and an API key in Secret
-Manager, and runs the API as a Cloud Run service. It is a service rather than a Cloud Run
+[Dockerfile](Dockerfile) with Cloud Build, keeps an API key in Secret Manager, creates the
+Secret Manager secret the service reads the Mailgun key from, and runs the API as a Cloud Run
+service. It is a service rather than a Cloud Run
 function on purpose: a function only has CPU while a request is in flight, and here the
 transcription runs after the request has been answered, so the service keeps its CPU
 allocated between requests (`cpu_idle = false`) and keeps one instance warm (`min_instances`).
 
 ```
 cd deploy
-cp terraform.tfvars.example terraform.tfvars   # project, region, Mailgun domain and key
+cp terraform.tfvars.example terraform.tfvars   # project, region, Mailgun domain
 terraform init
 terraform apply
+terraform output mailgun_secret                # the command that puts the Mailgun key in place
 terraform output -raw api_key                  # what callers put in X-API-Key
 ```
 
 `apply` needs `gcloud` logged in to the project; it enables the APIs, builds and pushes the
 image (a new build whenever `src/`, the lockfile or the Dockerfile change), and prints the
-service URL. The endpoint is reachable by anyone (`public = true`) but refuses requests
-without the generated API key. Keep the state in a private bucket (see the `backend "gcs"`
-comment in `versions.tf`): it contains both keys.
+service URL. The Mailgun sending key is never a Terraform input: run the command from the
+`mailgun_secret` output once to add it to the secret (and again to rotate it), and the running
+service picks it up by itself. The endpoint is reachable by anyone (`public = true`) but
+refuses requests without the generated API key. The state lives in a private bucket (the
+`backend "gcs"` block in `versions.tf`) because it contains that API key.
 
 ### Deploying from GitHub
 
@@ -131,9 +141,10 @@ requests.
 
 Then, in the repository's settings, create a `develop` environment and give it the variables
 the output lists (`GCP_PROJECT_ID`, `GCP_REGION`, `GCP_WORKLOAD_IDENTITY_PROVIDER`,
-`GCP_DEPLOYER_SERVICE_ACCOUNT`, `MAILGUN_DOMAIN`, optionally `MAILGUN_FROM`) and the secrets
-`MAILGUN_API_KEY` and, optionally, `SCORER_API_KEY` (left out, the API key is generated on the
-first deploy and kept in the Terraform state; read it with `terraform output -raw api_key`).
+`GCP_DEPLOYER_SERVICE_ACCOUNT`, `MAILGUN_DOMAIN`, optionally `MAILGUN_FROM`) and, optionally,
+the secret `SCORER_API_KEY` (left out, the API key is generated on the first deploy and kept
+in the Terraform state; read it with `terraform output -raw api_key`). The Mailgun key is not
+a GitHub secret: it goes straight into Secret Manager, as described above.
 The bootstrap also creates the Cloud Build staging bucket and grants the deployer access to the
 state bucket, so the workflow needs nothing else. The deployment's URL appears on the
 workflow run's summary page and on the `develop` environment.

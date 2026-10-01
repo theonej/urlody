@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "email-validator>=2.3.0",
     "fastapi>=0.142.2",
+    "google-cloud-secret-manager>=2.31.0",
     "httpx>=0.28.1",
     "imageio-ffmpeg>=0.6.0",
     "librosa>=1.0.0",

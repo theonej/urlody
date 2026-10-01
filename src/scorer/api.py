@@ -5,11 +5,13 @@
 One endpoint, ``POST /transcriptions``, accepts the job and answers at once;
 the transcription then runs in the background and the PDF, MusicXML and MIDI
 go to the recipient zipped, or a note saying why it failed. Mail goes out
-through Mailgun (``MAILGUN_API_KEY`` and ``MAILGUN_DOMAIN``), or over plain
-SMTP (``SMTP_HOST`` etc.), or into a folder of .eml files for local testing
-(``SCORER_OUTBOX``); a ``.env`` file in the working directory is read for
-these. Set ``SCORER_API_KEY`` to require it in an ``X-API-Key`` header: the
-endpoint will send mail to any address it is given.
+through Mailgun (``MAILGUN_DOMAIN`` with the key either in ``MAILGUN_API_KEY``
+or, in production, read at run time from Google Secret Manager via
+``MAILGUN_API_KEY_SECRET``), or over plain SMTP (``SMTP_HOST`` etc.), or into
+a folder of .eml files for local testing (``SCORER_OUTBOX``); a ``.env`` file
+in the working directory is read for these. Set ``SCORER_API_KEY`` to require
+it in an ``X-API-Key`` header: the endpoint will send mail to any address it
+is given.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import os
 import smtplib
 import tempfile
 import threading
+import time
 import uuid
 import warnings
 import zipfile
@@ -78,6 +81,40 @@ class MailError(Exception):
     """The mail provider would not take the message."""
 
 
+class SecretManagerKey:
+    """A key kept in Google Secret Manager and read when first needed.
+
+    The value is cached and read again when the provider rejects it or after
+    ``REFRESH_AFTER`` seconds, so a rotated key takes effect without a
+    redeploy. ``name`` is ``projects/<project>/secrets/<secret>``, with an
+    optional ``/versions/<n>``; the latest version is used otherwise. The
+    client authenticates as the service's own account.
+    """
+
+    REFRESH_AFTER = 600
+
+    def __init__(self, name: str, client=None) -> None:
+        self.name = name if "/versions/" in name else f"{name.rstrip('/')}/versions/latest"
+        self._client = client
+        self._value: str | None = None
+        self._read_at = 0.0
+        self._lock = threading.Lock()
+
+    def value(self, refresh: bool = False) -> str:
+        with self._lock:
+            stale = time.monotonic() - self._read_at > self.REFRESH_AFTER
+            if self._value is None or refresh or stale:
+                if self._client is None:
+                    from google.cloud import secretmanager
+
+                    self._client = secretmanager.SecretManagerServiceClient()
+                response = self._client.access_secret_version(request={"name": self.name})
+                self._value = response.payload.data.decode().strip()
+                self._read_at = time.monotonic()
+                log.info("read %s", self.name)
+            return self._value
+
+
 class Mailer(Protocol):
     sender: str
 
@@ -96,7 +133,7 @@ class Mailgun:
 
     sender: str
     domain: str
-    api_key: str
+    api_key: str | SecretManagerKey  # a domain sending key, given or read at run time
     base: str = "https://api.mailgun.net"  # https://api.eu.mailgun.net for EU accounts
     client: httpx.Client | None = None  # a test double; a real client is made when None
 
@@ -108,12 +145,20 @@ class Mailgun:
             for part in message.iter_attachments()
         ]
         client = self.client or httpx.Client(timeout=60)
-        response = client.post(
-            f"{self.base}/v3/{self.domain}/messages",
-            auth=("api", self.api_key),
-            data={"from": self.sender, "to": message["To"], "subject": message["Subject"], "text": text},
-            files=files or None,
-        )
+
+        def post(key: str) -> httpx.Response:
+            return client.post(
+                f"{self.base}/v3/{self.domain}/messages",
+                auth=("api", key),
+                data={"from": self.sender, "to": message["To"], "subject": message["Subject"], "text": text},
+                files=files or None,
+            )
+
+        managed = isinstance(self.api_key, SecretManagerKey)
+        response = post(self.api_key.value() if managed else self.api_key)
+        if response.status_code in (401, 403) and managed:
+            # The key may have been rotated since it was read: read it again.
+            response = post(self.api_key.value(refresh=True))
         if response.status_code != 200:
             raise MailError(f"Mailgun answered {response.status_code}: {response.text.strip()}")
         log.info("mail to %s accepted by Mailgun: %s", message["To"], response.json().get("id", "?"))
@@ -166,10 +211,13 @@ def mailer_from_env() -> Mailer:
     env = os.environ.get
     if outbox := env("SCORER_OUTBOX"):
         return Outbox(sender=env("SMTP_FROM") or env("MAILGUN_FROM") or "scorer@localhost", folder=Path(outbox))
-    if key := env("MAILGUN_API_KEY"):
+    key: str | SecretManagerKey | None = env("MAILGUN_API_KEY")
+    if secret := env("MAILGUN_API_KEY_SECRET"):
+        key = SecretManagerKey(secret)
+    if key:
         domain = env("MAILGUN_DOMAIN")
         if not domain:
-            raise RuntimeError("MAILGUN_DOMAIN is needed alongside MAILGUN_API_KEY")
+            raise RuntimeError("MAILGUN_DOMAIN is needed alongside the Mailgun key")
         return Mailgun(
             sender=env("MAILGUN_FROM") or f"scorer@{domain}",
             domain=domain,
@@ -186,8 +234,8 @@ def mailer_from_env() -> Mailer:
             security=(env("SMTP_SECURITY") or "starttls").lower(),
         )
     raise RuntimeError(
-        "no way to send mail: set MAILGUN_API_KEY and MAILGUN_DOMAIN (and MAILGUN_FROM), or "
-        "SMTP_HOST (and SMTP_FROM, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, "
+        "no way to send mail: set MAILGUN_DOMAIN with MAILGUN_API_KEY or MAILGUN_API_KEY_SECRET "
+        "(and MAILGUN_FROM), or SMTP_HOST (and SMTP_FROM, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, "
         "SMTP_SECURITY=starttls|ssl|none), or SCORER_OUTBOX=<folder> to write .eml files instead"
     )
 
@@ -256,6 +304,13 @@ def process(request: TranscriptionRequest, mailer: Mailer, jobs: threading.Semap
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.mailer = mailer_from_env()
+    if isinstance(app.state.mailer, Mailgun) and isinstance(app.state.mailer.api_key, SecretManagerKey):
+        # Read the key now so a wrong name or missing permission shows up in the
+        # startup log, but keep serving: it is read again when mail is sent.
+        try:
+            app.state.mailer.api_key.value()
+        except Exception as exc:
+            log.warning("Mailgun key not readable yet (%s); will try again when sending", exc)
     app.state.jobs = threading.Semaphore(int(os.environ.get("SCORER_API_WORKERS", "1")))
     app.state.api_key = os.environ.get("SCORER_API_KEY")
     yield

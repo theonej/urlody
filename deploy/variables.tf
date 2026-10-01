@@ -1,6 +1,10 @@
 variable "project_id" {
   description = "Google Cloud project to deploy into."
   type        = string
+  validation {
+    condition     = length(trimspace(var.project_id)) > 0
+    error_message = "project_id is empty. In GitHub, set the GCP_PROJECT_ID variable on the develop environment; locally, set it in terraform.tfvars."
+  }
 }
 
 variable "region" {
@@ -15,15 +19,13 @@ variable "service_name" {
   default     = "scorer"
 }
 
-variable "mailgun_api_key" {
-  description = "Mailgun domain sending key (or private API key); stored in Secret Manager."
-  type        = string
-  sensitive   = true
-}
-
 variable "mailgun_domain" {
   description = "Mailgun sending domain, e.g. mail.example.com."
   type        = string
+  validation {
+    condition     = length(trimspace(var.mailgun_domain)) > 0
+    error_message = "mailgun_domain is empty. In GitHub, set the MAILGUN_DOMAIN variable on the develop environment; locally, set it in terraform.tfvars."
+  }
 }
 
 variable "mailgun_from" {
