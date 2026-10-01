@@ -104,9 +104,10 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   attribute_condition = "assertion.repository == \"${var.github_repository}\""
 }
 
-# ... and only workflows running on the deploy branch may act as the deployer.
+# ... and only workflows running on the deploy branches may act as the deployer.
 resource "google_service_account_iam_member" "github_impersonates_deployer" {
+  for_each           = toset(var.branches)
   service_account_id = google_service_account.deployer.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.ref/refs/heads/${var.branch}"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.ref/refs/heads/${each.key}"
 }

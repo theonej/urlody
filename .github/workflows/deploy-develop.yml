@@ -1,9 +1,10 @@
 # Deploys the API to Cloud Run whenever develop changes (a merged pull request
-# arrives as a push). GitHub authenticates to Google Cloud with Workload
-# Identity Federation, so no service-account key is stored anywhere; the
-# trust relationship and the deployer service account come from
-# deploy/bootstrap, applied once by hand. Configure in the repository's
-# "develop" environment:
+# arrives as a push), or by hand from the Actions tab ("Run workflow"), where
+# it can also be run as a plan only. GitHub authenticates to Google Cloud with
+# Workload Identity Federation, so no service-account key is stored anywhere;
+# the trust relationship and the deployer service account come from
+# deploy/bootstrap, applied once by hand, and it accepts runs from the develop
+# and main branches. Configure in the repository's "develop" environment:
 #
 #   variables  GCP_PROJECT_ID, GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_DEPLOYER_SERVICE_ACCOUNT,
 #              MAILGUN_DOMAIN, MAILGUN_FROM (optional), GCP_REGION (optional)
@@ -14,6 +15,11 @@ on:
   push:
     branches: [develop]
   workflow_dispatch:
+    inputs:
+      plan_only:
+        description: "Only show what would change; do not apply"
+        type: boolean
+        default: false
 
 # One deployment at a time; a queued one waits rather than racing on the state.
 concurrency:
@@ -85,11 +91,13 @@ jobs:
 
       - name: Terraform apply
         id: apply
+        if: ${{ !inputs.plan_only }}
         run: |
           terraform apply tfplan
           echo "url=$(terraform output -raw url)" >> "$GITHUB_OUTPUT"
 
       - name: Summary
+        if: ${{ !inputs.plan_only }}
         run: |
           {
             echo "### Deployed to Cloud Run"

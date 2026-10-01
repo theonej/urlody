@@ -11,30 +11,6 @@ Any source [yt-dlp](https://github.com/yt-dlp/yt-dlp) supports works: YouTube, S
 Bandcamp, a direct `.mp3`/`.wav` link, a `ytsearch1:<query>` search, or a local file path.
 ffmpeg is bundled (via `imageio-ffmpeg`), so nothing needs to be installed besides `uv`.
 
-## Windows binary
-
-The [Build Windows binary](.github/workflows/build-windows.yml) GitHub Actions workflow builds a
-standalone `scorer.exe` (no Python needed) on every push to `main` — download
-`scorer-windows-x64` from the run's artifacts — and attaches `scorer-windows-x64.zip` to the
-release for every `v*` tag.
-
-Unzip it anywhere. The `scorer` folder holds `scorer.exe` and an `_internal` folder it needs, so
-keep them together. Run it from a terminal, or add the folder to your `PATH`:
-
-```
-C:\Tools\scorer\scorer.exe "https://www.youtube.com/watch?v=..." --duration 30
-```
-
-To build it yourself on a Windows machine with [uv](https://docs.astral.sh/uv/) installed:
-
-```
-uv sync
-uv run pyinstaller scorer.spec --noconfirm
-uv run python scripts\smoke_test.py dist\scorer\scorer.exe
-```
-
-The same commands build a macOS or Linux binary on those platforms.
-
 ## Output
 
 Written to `./scores/<title>.*`:
@@ -135,18 +111,23 @@ comment in `versions.tf`): it contains both keys.
 
 [deploy-develop.yml](.github/workflows/deploy-develop.yml) runs the tests and then
 `terraform apply` on every push to `develop` (a merged pull request arrives as a push), so
-`develop` is always what is running on Cloud Run. GitHub signs in to Google Cloud with
-Workload Identity Federation: no service-account key is stored in GitHub, and only workflows
-from this repository's `develop` branch can act as the deployer. Setting that up is a one-time
-job, done as a project owner:
+`develop` is always what is running on Cloud Run. It can also be started by hand from the
+Actions tab with "Run workflow", from `develop` or `main`, with a plan-only option that shows
+what would change without applying it. GitHub signs in to Google Cloud with Workload Identity
+Federation: no service-account key is stored in GitHub, and only workflows from this
+repository's `develop` and `main` branches can act as the deployer. Setting that up is a
+one-time job, done as a project owner:
 
 ```
 cd deploy/bootstrap
-cp terraform.tfvars.example terraform.tfvars    # project id; the repository and branch default to theonej/urlody and develop
+cp terraform.tfvars.example terraform.tfvars    # project id; the repository and branches default to theonej/urlody, develop and main
 terraform init
 terraform apply
 terraform output github_variables
 ```
+
+[test.yml](.github/workflows/test.yml) runs the test suite on pushes to `main` and on pull
+requests.
 
 Then, in the repository's settings, create a `develop` environment and give it the variables
 the output lists (`GCP_PROJECT_ID`, `GCP_REGION`, `GCP_WORKLOAD_IDENTITY_PROVIDER`,

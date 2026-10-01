@@ -15,10 +15,10 @@ variable "github_repository" {
   default     = "theonej/urlody"
 }
 
-variable "branch" {
-  description = "Only workflows running on this branch may deploy."
-  type        = string
-  default     = "develop"
+variable "branches" {
+  description = "Only workflows running on these branches may deploy (develop deploys on push; main for manual runs)."
+  type        = list(string)
+  default     = ["develop", "main"]
 }
 
 variable "state_bucket" {
